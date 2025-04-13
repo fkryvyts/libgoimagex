@@ -9,6 +9,7 @@ typedef struct {
     int height;
     int frame_count;
     unsigned char **frames;
+	unsigned long *frame_delays;
 } ImageData;
 
 typedef struct {
@@ -24,6 +25,7 @@ import (
 	"image/draw"
 	"image/gif"
 	"os"
+	"time"
 	"unsafe"
 )
 
@@ -60,6 +62,9 @@ func loadGif(f *os.File) (C.ImageData, error) {
 	framesPtr := C.malloc(C.size_t(unsafe.Sizeof(uintptr(0))) * C.size_t(frameCount))
 	framePtrs := (*[1 << 30]*C.uchar)(framesPtr)
 
+	frameDelaysPtr := C.malloc(C.size_t(unsafe.Sizeof(C.ulong(0))) * C.size_t(frameCount))
+	frameDelaysPtrs := (*[1 << 30]C.ulong)(frameDelaysPtr)
+
 	rgba := image.NewRGBA(image.Rect(0, 0, width, height))
 
 	for i, frame := range g.Image {
@@ -71,6 +76,7 @@ func loadGif(f *os.File) (C.ImageData, error) {
 		copy(out, rgba.Pix)
 
 		framePtrs[i] = (*C.uchar)(data)
+		frameDelaysPtrs[i] = C.ulong(time.Duration(g.Delay[i]) * time.Second / 100)
 	}
 
 	return C.ImageData{
@@ -94,6 +100,10 @@ func FreeResult(result C.Result) {
 
 	if result.data.frames != nil {
 		C.free(unsafe.Pointer(result.data.frames))
+	}
+
+	if result.data.frame_delays != nil {
+		C.free(unsafe.Pointer(result.data.frame_delays))
 	}
 }
 
