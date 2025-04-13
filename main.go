@@ -60,9 +60,10 @@ func loadGif(f *os.File) (C.ImageData, error) {
 	framesPtr := C.malloc(C.size_t(unsafe.Sizeof(uintptr(0))) * C.size_t(frameCount))
 	framePtrs := (*[1 << 30]*C.uchar)(framesPtr)
 
+	rgba := image.NewRGBA(image.Rect(0, 0, width, height))
+
 	for i, frame := range g.Image {
-		rgba := image.NewRGBA(image.Rect(0, 0, width, height))
-		draw.Draw(rgba, rgba.Bounds(), frame, image.Point{}, draw.Src)
+		draw.Draw(rgba, rgba.Bounds(), frame, image.Point{}, draw.Over)
 
 		dataSize := width * height * 4
 		data := C.malloc(C.size_t(dataSize))
