@@ -80,10 +80,11 @@ func loadGif(f *os.File) (C.ImageData, error) {
 	}
 
 	return C.ImageData{
-		width:       C.int(width),
-		height:      C.int(height),
-		frame_count: C.int(frameCount),
-		frames:      (**C.uchar)(framesPtr),
+		width:        C.int(width),
+		height:       C.int(height),
+		frame_count:  C.int(frameCount),
+		frames:       (**C.uchar)(framesPtr),
+		frame_delays: (*C.ulong)(frameDelaysPtr),
 	}, nil
 }
 
