@@ -15,19 +15,30 @@ typedef struct {
 typedef struct {
     ImageData data;
     char* err;
+	int is_unsupported_type;
 } Result;
 
 */
 import "C"
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/draw"
 	"image/gif"
+	"image/png"
+	"io"
+	"net/http"
 	"os"
 	"time"
 	"unsafe"
+
+	"github.com/ingridhq/zebrash"
+	"github.com/ingridhq/zebrash/drawers"
 )
+
+var errUnsupportedContentType = fmt.Errorf("unsupported content type")
 
 //export LoadImage
 func LoadImage(path *C.cchar_t) C.Result {
@@ -39,9 +50,26 @@ func LoadImage(path *C.cchar_t) C.Result {
 	}
 	defer f.Close()
 
-	image, err := loadGif(f)
+	content, err := io.ReadAll(f)
 	if err != nil {
-		return errorResult(fmt.Errorf("failed to read GIF: %w", err))
+		return errorResult(fmt.Errorf("failed to read file content: %w", err))
+	}
+
+	var image C.ImageData
+
+	switch contentType := http.DetectContentType(content); {
+	case contentType == "image/gif":
+		image, err = loadGif(content)
+		if err != nil {
+			return errorResult(fmt.Errorf("failed to read GIF: %w", err))
+		}
+	case bytes.Contains(content, []byte("^XA")) && bytes.Contains(content, []byte("^XZ")):
+		image, err = loadZpl(content)
+		if err != nil {
+			return errorResult(fmt.Errorf("failed to read ZPL: %w", err))
+		}
+	default:
+		return errorResult(fmt.Errorf("%w: %v", errUnsupportedContentType, contentType))
 	}
 
 	return C.Result{
@@ -49,15 +77,57 @@ func LoadImage(path *C.cchar_t) C.Result {
 	}
 }
 
-func loadGif(f *os.File) (C.ImageData, error) {
-	g, err := gif.DecodeAll(f)
+func loadZpl(content []byte) (C.ImageData, error) {
+	parser := zebrash.NewParser()
+
+	res, err := parser.Parse(content)
+	if err != nil {
+		return C.ImageData{}, fmt.Errorf("failed to parse ZPL label: %w", err)
+	}
+
+	var buff bytes.Buffer
+
+	drawer := zebrash.NewDrawer()
+
+	if len(res) == 0 {
+		return C.ImageData{}, fmt.Errorf("no ZPL labels to draw")
+	}
+
+	err = drawer.DrawLabelAsPng(res[0], &buff, drawers.DrawerOptions{})
+	if err != nil {
+		return C.ImageData{}, fmt.Errorf("failed to draw ZPL label: %w", err)
+	}
+
+	frame, err := png.Decode(&buff)
 	if err != nil {
 		return C.ImageData{}, err
 	}
 
-	frameCount := len(g.Image)
-	width := g.Config.Width
-	height := g.Config.Height
+	return imageData([]image.Image{frame}, []int{0})
+}
+
+func loadGif(content []byte) (C.ImageData, error) {
+	g, err := gif.DecodeAll(bytes.NewReader(content))
+	if err != nil {
+		return C.ImageData{}, err
+	}
+
+	frames := make([]image.Image, 0, len(g.Image))
+	for _, frame := range g.Image {
+		frames = append(frames, frame)
+	}
+
+	return imageData(frames, g.Delay)
+}
+
+func imageData(frames []image.Image, delays []int) (C.ImageData, error) {
+	if len(frames) == 0 {
+		return C.ImageData{}, fmt.Errorf("no frames to return")
+	}
+
+	frameCount := len(frames)
+	width := frames[0].Bounds().Dx()
+	height := frames[0].Bounds().Dy()
 
 	framesPtr := C.malloc(C.size_t(unsafe.Sizeof(uintptr(0))) * C.size_t(frameCount))
 	framePtrs := (*[1 << 30]*C.uchar)(framesPtr)
@@ -67,7 +137,7 @@ func loadGif(f *os.File) (C.ImageData, error) {
 
 	rgba := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	for i, frame := range g.Image {
+	for i, frame := range frames {
 		draw.Draw(rgba, rgba.Bounds(), frame, image.Point{}, draw.Over)
 
 		dataSize := width * height * 4
@@ -76,7 +146,7 @@ func loadGif(f *os.File) (C.ImageData, error) {
 		copy(out, rgba.Pix)
 
 		framePtrs[i] = (*C.uchar)(data)
-		frameDelaysPtrs[i] = C.ulong(time.Duration(g.Delay[i]) * time.Second / 100)
+		frameDelaysPtrs[i] = C.ulong(time.Duration(delays[i]) * time.Second / 100)
 	}
 
 	return C.ImageData{
@@ -109,9 +179,15 @@ func FreeResult(result C.Result) {
 }
 
 func errorResult(err error) C.Result {
+	unsupported := 0
+	if errors.Is(err, errUnsupportedContentType) {
+		unsupported = 1
+	}
+
 	cmsg := C.CString(err.Error())
 	return C.Result{
-		err: cmsg,
+		err:                 cmsg,
+		is_unsupported_type: C.int(unsupported),
 	}
 }
 
